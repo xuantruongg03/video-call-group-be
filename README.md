@@ -1,0 +1,1 @@
+ngrok start --config="C:\Users\lexua\Downloads\ngrok-v3-stable-windows-amd64\ngrok.yml" --all
