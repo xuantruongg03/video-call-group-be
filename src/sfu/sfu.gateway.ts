@@ -635,24 +635,7 @@ export class SfuGateway implements OnGatewayInit {
       });
     }
   }
-  @SubscribeMessage('sfu:request-keyframe')
-  async handleRequestKeyframe(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { consumerId: string },
-  ) {
-    const participant = this.getParticipantBySocketId(client.id);
-    if (!participant) return;
-  
-    const consumer = participant.consumers.get(data.consumerId);
-    if (!consumer || consumer.kind !== 'video') return;
-  
-    try {
-      // consumer.requestKeyFrame();
-      console.log(`Keyframe requested for consumer ${data.consumerId}`);
-    } catch (error) {
-      console.error('Failed to request keyframe:', error);
-    }
-  }
+
   @SubscribeMessage('sfu:unpublish')
   async handleUnpublish(
     @ConnectedSocket() client: Socket,
