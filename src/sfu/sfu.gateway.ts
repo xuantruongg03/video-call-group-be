@@ -17,8 +17,8 @@ interface Participant {
   socketId: string;
   peerId: string;
   rtpCapabilities?: mediasoupTypes.RtpCapabilities;
-  transports: Map<string, mediasoupTypes.WebRtcTransport>; 
-  producers: Map<string, mediasoupTypes.Producer>; 
+  transports: Map<string, mediasoupTypes.WebRtcTransport>;
+  producers: Map<string, mediasoupTypes.Producer>;
   consumers: Map<string, mediasoupTypes.Consumer>;
   isCreator: boolean;
   timeArrive: Date;
@@ -26,9 +26,9 @@ interface Participant {
 
 interface Stream {
   streamId: string;
-  publisherId: string; 
+  publisherId: string;
   producerId: string;
-  metadata: any; 
+  metadata: any;
   rtpParameters: mediasoupTypes.RtpParameters;
 }
 
@@ -160,6 +160,12 @@ export class SfuGateway implements OnGatewayInit {
         metadata: stream.metadata,
       }));
 
+    // Tìm các stream "presence" và gửi sự kiện presence riêng
+    const presenceStreams = availableStreams.filter(stream =>
+      stream.streamId.includes('presence') ||
+      (stream.metadata && stream.metadata.type === 'presence')
+    );
+
     // Gửi router RTP capabilities đến client
     try {
       const router = await this.sfuService.createMediaRoom(roomId);
@@ -177,6 +183,16 @@ export class SfuGateway implements OnGatewayInit {
 
     client.emit('sfu:streams', availableStreams);
 
+    // Gửi các sự kiện presence cho người dùng mới
+    presenceStreams.forEach(stream => {
+      setTimeout(() => {
+        client.emit('sfu:presence', {
+          peerId: stream.publisherId,
+          metadata: stream.metadata
+        });
+      }, 500);
+    });
+
     client.to(roomId).emit('sfu:new-peer-join', {
       peerId: participant.peerId,
       isCreator: participant.isCreator,
@@ -190,7 +206,6 @@ export class SfuGateway implements OnGatewayInit {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string; peerId: string },
   ) {
-    console.log(`Participant ${data.peerId} is speaking`);
     
     const roomId = data.roomId;
     const peerId = data.peerId;
@@ -199,10 +214,7 @@ export class SfuGateway implements OnGatewayInit {
     const room = this.getParticipantRoom(participant);
     if (!room) return;
     client.to(room).emit('sfu:user-speaking', { peerId });
-    console.log(`Participant ${data.peerId} is speaking`);
-    // Gửi thông báo cho client về việc người dùng đang nói
-    // client.emit('sfu:my-speaking', { peerId });
-    
+
   }
 
   @SubscribeMessage('sfu:stop-speaking')
@@ -228,7 +240,6 @@ export class SfuGateway implements OnGatewayInit {
       dtlsParameters: mediasoupTypes.DtlsParameters;
     },
   ) {
-    console.log(`Transport ${data.transportId} connected`);
     try {
       const participant = this.getParticipantBySocketId(client.id);
       if (!participant) {
@@ -242,7 +253,6 @@ export class SfuGateway implements OnGatewayInit {
 
       // Check if transport is already connected
       if (transport.appData && transport.appData.connected) {
-        console.log(`Transport ${data.transportId} is already connected, ignoring request`);
         client.emit('sfu:transport-connected', { transportId: data.transportId });
         return;
       }
@@ -251,7 +261,6 @@ export class SfuGateway implements OnGatewayInit {
         throw new Error('DTLS parameters missing or null');
       }
 
-      console.log(`Connecting transport ${data.transportId} with DTLS role: ${data.dtlsParameters.role}`);
       await transport.connect({ dtlsParameters: data.dtlsParameters });
 
       // Mark transport as connected
@@ -261,7 +270,6 @@ export class SfuGateway implements OnGatewayInit {
       };
 
       client.emit('sfu:transport-connected', { transportId: data.transportId });
-      console.log(`Transport ${data.transportId} connected successfully`);
     } catch (error) {
       console.error('Connect transport error:', error);
       client.emit('sfu:error', {
@@ -277,9 +285,6 @@ export class SfuGateway implements OnGatewayInit {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string, participantId: string },
   ) {
-    console.log(data.participantId);
-
-    //Xoá người dùng khỏi phòng
     const room = this.rooms.get(data.roomId);
     if (!room) {
       client.emit('sfu:error', {
@@ -436,8 +441,7 @@ export class SfuGateway implements OnGatewayInit {
       metadata: any;
     },
   ) {
-    console.log(`[Produce] Received produce request kind:${data.kind}, metadata:`, data.metadata);
-    
+
     const participant = this.getParticipantBySocketId(client.id);
     if (!participant) {
       client.emit('sfu:error', {
@@ -593,12 +597,25 @@ export class SfuGateway implements OnGatewayInit {
       // Log detailed information for debugging
       console.log(`Stream not found: ${data.streamId}`);
       console.log(`Available streams: ${[...this.streams.keys()].join(', ')}`);
-      
+
       client.emit('sfu:error', {
         message: 'Stream not found',
         code: 'STREAM_NOT_FOUND',
         streamId: data.streamId,
       });
+      return;
+    }
+
+    // Kiểm tra xem có phải là stream presence không (không có producer thực)
+    if (stream.producerId.startsWith('presence-') || data.streamId.includes('-presence-')) {
+      console.log(`Handling presence stream without WebRTC consumer: ${data.streamId}`);
+
+      // Thay vì bỏ qua, gửi sự kiện presence trực tiếp đến client
+      client.emit('sfu:presence', {
+        peerId: stream.publisherId,
+        metadata: stream.metadata
+      });
+
       return;
     }
 
@@ -657,14 +674,14 @@ export class SfuGateway implements OnGatewayInit {
       });
     } catch (error) {
       console.error('Error creating consumer:', error);
-      
+
       // Handle case where producer is not found
       if (error.message && error.message.includes('Producer not found')) {
         console.log(`Producer not found for stream: ${data.streamId}, producerId: ${stream.producerId}`);
-        
+
         // Remove invalid stream entry
         this.streams.delete(data.streamId);
-        
+
         // Notify clients that this stream is no longer available
         const streamRoom = this.getParticipantRoom(participant);
         if (streamRoom) {
@@ -675,7 +692,7 @@ export class SfuGateway implements OnGatewayInit {
           });
         }
       }
-      
+
       client.emit('sfu:error', {
         message: error.message || 'Error creating consumer',
         code: error.code || 'CONSUMER_ERROR',
@@ -797,7 +814,24 @@ export class SfuGateway implements OnGatewayInit {
         publisherId: stream.publisherId,
         metadata: stream.metadata,
       }));
+
     client.emit('sfu:streams', availableStreams);
+
+    // Xử lý riêng các stream presence
+    const presenceStreams = availableStreams.filter(stream =>
+      stream.streamId.includes('presence') ||
+      (stream.metadata && stream.metadata.type === 'presence')
+    );
+
+    // Gửi sự kiện presence riêng cho từng stream presence
+    presenceStreams.forEach(stream => {
+      setTimeout(() => {
+        client.emit('sfu:presence', {
+          peerId: stream.publisherId,
+          metadata: stream.metadata
+        });
+      }, 200);
+    });
   }
 
   @SubscribeMessage('sfu:update')
@@ -806,7 +840,7 @@ export class SfuGateway implements OnGatewayInit {
     @MessageBody() data: { streamId: string; metadata: any },
   ) {
     console.log(`Update stream: ${data.streamId}, metadata:`, data.metadata);
-    
+
     const participant = this.getParticipantBySocketId(client.id);
     if (!participant) return;
 
@@ -820,13 +854,13 @@ export class SfuGateway implements OnGatewayInit {
     }
 
     const stream = this.getStreamByProducerId(data.streamId);
-    
+
     if (!stream) {
       // Tìm stream theo streamId thay vì producerId
       const streamById = Array.from(this.streams.values()).find(
         s => s.producerId === data.streamId
       );
-      
+
       if (streamById && streamById.publisherId === participant.peerId) {
         // Cập nhật metadata nếu tìm thấy stream theo streamId
         if (data.metadata.video !== undefined) {
@@ -838,18 +872,18 @@ export class SfuGateway implements OnGatewayInit {
         if (data.metadata.noCameraAvailable !== undefined) {
           streamById.metadata.noCameraAvailable = data.metadata.noCameraAvailable;
         }
-        
+
         // Thông báo cho các client khác về sự thay đổi
         client.to(roomId).emit('sfu:stream-updated', {
           streamId: data.streamId,
           publisherId: participant.peerId,
           metadata: streamById.metadata,
         });
-        
+
         console.log("Stream updated by ID:", data.streamId, streamById.metadata);
         return;
       }
-      
+
       client.emit('sfu:error', {
         message: 'Không thể cập nhật stream không tồn tại',
         streamId: data.streamId,
@@ -883,7 +917,7 @@ export class SfuGateway implements OnGatewayInit {
     });
 
     console.log("Stream updated:", data.streamId, stream.metadata);
-    
+
   }
 
   @SubscribeMessage('sfu:leave-room')
@@ -951,6 +985,87 @@ export class SfuGateway implements OnGatewayInit {
 
     // Cập nhật service với dữ liệu phòng mới nhất
     this.sfuService.updateRooms(this.rooms);
+  }
+
+  @SubscribeMessage('sfu:presence')
+  handlePresence(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      peerId: string;
+      metadata: any;
+    },
+  ) {
+    const participant = this.getParticipantBySocketId(client.id);
+    if (!participant) {
+      console.error('Participant not found for socket ID:', client.id);
+      return;
+    }
+
+    const roomId = this.getParticipantRoom(participant);
+    if (!roomId) {
+      console.error('Room not found for participant:', participant.peerId);
+      return;
+    }
+
+    // Tìm xem có stream presence nào hiện tại không
+    const existingPresenceStreams = Array.from(this.streams.entries())
+      .filter(([streamId, stream]) =>
+        stream.publisherId === participant.peerId &&
+        (streamId.includes('presence') || stream.metadata?.type === 'presence')
+      );
+
+    // Nếu đã có presence stream, chỉ cập nhật metadata thay vì tạo mới
+    if (existingPresenceStreams.length > 0) {
+      const [streamId, stream] = existingPresenceStreams[0];
+
+      // Cập nhật metadata
+      stream.metadata = {
+        ...stream.metadata,
+        ...data.metadata,
+        type: 'presence',
+        noCameraAvailable: true,
+        noMicroAvailable: true,
+      };
+
+      // Chỉ gửi thông báo cập nhật nếu có thay đổi
+      client.to(roomId).emit('sfu:presence', {
+        peerId: participant.peerId,
+        metadata: stream.metadata,
+      });
+
+      return;
+    }
+
+    // Tạo một streamId đặc biệt để đánh dấu đây là presence (không có media thực)
+    const streamId = `${participant.peerId}-presence-${Date.now()}`;
+
+    // Lưu stream "vô hình" này vào danh sách streams
+    const stream: Stream = {
+      streamId,
+      publisherId: participant.peerId,
+      producerId: 'presence-' + participant.peerId,
+      metadata: {
+        ...data.metadata,
+        type: 'presence',
+        noCameraAvailable: true,
+        noMicroAvailable: true,
+      },
+      rtpParameters: { codecs: [], headerExtensions: [] },
+    };
+
+    this.streams.set(streamId, stream);
+
+    // Thông báo cho tất cả người dùng khác trong phòng về sự hiện diện này
+    client.to(roomId).emit('sfu:presence', {
+      peerId: participant.peerId,
+      metadata: {
+        ...data.metadata,
+        type: 'presence',
+      },
+    });
+
   }
 
   // Helper methods
