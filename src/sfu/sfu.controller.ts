@@ -57,7 +57,13 @@ export class SfuController {
     if (!roomId) {
       throw new HttpException('Missing roomId', HttpStatus.BAD_REQUEST);
     }
-    
+
+    //Check if room is not existing
+    const room = this.sfuService.getRoom(roomId);
+    if (!room) {
+      throw new HttpException('Room does not exist', HttpStatus.NOT_FOUND);
+    }
+    // Check if room is locked
     const isLocked = this.sfuService.isRoomLocked(roomId);
     
     return { 

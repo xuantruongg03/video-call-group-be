@@ -182,6 +182,15 @@ export class SfuService {
     return this.mediaRooms.get(roomId)?.producers.get(streamId);
   }
   
+  // Get router for a room
+  async getMediaRouter(roomId: string): Promise<mediasoupTypes.Router> {
+    const mediaRoom = this.mediaRooms.get(roomId);
+    if (!mediaRoom) {
+      return await this.createMediaRoom(roomId);
+    }
+    return mediaRoom.router;
+  }
+  
   // Lưu consumer
   saveConsumer(roomId: string, streamId: string, consumer: mediasoupTypes.Consumer): void {
     const mediaRoom = this.mediaRooms.get(roomId);
