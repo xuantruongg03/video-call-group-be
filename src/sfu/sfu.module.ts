@@ -1,12 +1,14 @@
-import { Module } from '@nestjs/common';
-import { SfuGateway } from './sfu.gateway';
-import { SfuController } from './sfu.controller';
-import { SfuService } from './sfu.service';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { WhiteboardModule } from '../whiteboard/whiteboard.module';
+import { SfuController } from './sfu.controller';
+import { SfuGateway } from './sfu.gateway';
+import { SfuService } from './sfu.service';
 
 @Module({
   providers: [SfuGateway, SfuService, ConfigService],
   controllers: [SfuController],
-  exports: [SfuGateway]
+  exports: [SfuService],
+  imports: [forwardRef(() => WhiteboardModule)]
 })
 export class SfuModule {} 

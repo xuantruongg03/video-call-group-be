@@ -2,17 +2,10 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { SfuModule } from './sfu/sfu.module';
-import { RouterModule, Routes } from '@nestjs/core';
-
-const routes: Routes = [
-  {
-    path: 'sfu',
-    module: SfuModule,
-  },
-];
+import { WhiteboardModule } from './whiteboard/whiteboard.module';
 
 @Module({
-  imports: [SfuModule],
+  imports: [SfuModule, WhiteboardModule],
   controllers: [AppController],
   providers: [AppService],
 })
