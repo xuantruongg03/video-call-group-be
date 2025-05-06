@@ -143,6 +143,14 @@ export class SfuGateway implements OnGatewayInit {
     };
 
     this.rooms.get(roomId)?.set(peerId, participant);
+    
+    // If this user is the creator, notify all users including the new one
+    // if (isCreator) {
+    //   this.io.to(roomId).emit('sfu:creator-changed', {
+    //     peerId: peerId,
+    //     isCreator: true
+    //   });
+    // }
 
     // Update service with latest room data
     this.sfuService.updateRooms(this.rooms);
@@ -193,7 +201,18 @@ export class SfuGateway implements OnGatewayInit {
       }, 500);
     });
 
-    client.to(roomId).emit('sfu:new-peer-join', {
+    // If creator of the room exists, notify the joining user
+    if (!isCreator) {
+      const creator = Array.from(this.rooms.get(roomId)?.values() || []).find(user => user.isCreator);
+      if (creator) {
+        client.emit('sfu:creator-changed', {
+          peerId: creator.peerId,
+          isCreator: true
+        });
+      }
+    }
+
+    this.io.to(roomId).emit('sfu:new-peer-join', {
       peerId: participant.peerId,
       isCreator: participant.isCreator,
       timeArrive: participant.timeArrive,
@@ -294,6 +313,9 @@ export class SfuGateway implements OnGatewayInit {
       return;
     }
 
+    const participant = room.get(data.participantId);
+    const isCreator = participant?.isCreator || false;
+
     //Xoá tất cả stream của người dùng
     for (const [streamId, stream] of Array.from(this.streams.entries())) {
       if (stream.publisherId === data.participantId) {
@@ -320,6 +342,31 @@ export class SfuGateway implements OnGatewayInit {
     client.to(data.roomId).emit('sfu:user-removed', {
       peerId: data.participantId,
     });
+
+    // If the removed user was the creator, assign creator status to the longest participant
+    if (isCreator && room.size > 0) {
+      const users = Array.from(room.values());
+      const longestUser = users.reduce((max, current) => {
+        return current.timeArrive > max.timeArrive ? current : max;
+      }, users[0]);
+      
+      if (longestUser) {
+        // Update creator status
+        longestUser.isCreator = true;
+        
+        // Reset whiteboard permissions when creator changes
+        this.whiteboardService.updatePermissions(data.roomId, []);
+        
+        // Notify all clients about creator change
+        this.io.to(data.roomId).emit('sfu:creator-changed', {
+          peerId: longestUser.peerId,
+          isCreator: true
+        });
+        
+        // Notify all clients that whiteboard permissions have been reset
+        this.io.to(data.roomId).emit('whiteboard:permissions', { allowed: [] });
+      }
+    }
   }
 
   @SubscribeMessage('sfu:get-users')
@@ -975,9 +1022,23 @@ export class SfuGateway implements OnGatewayInit {
     const longestUser = users.reduce((max, current) => {
       return current.timeArrive > max.timeArrive ? current : max;
     }, users[0]);
+
     if (longestUser) {
       // Cập nhật creator
       longestUser.isCreator = true;
+      
+      // Reset whiteboard permissions when creator changes
+      // This ensures only the new creator can draw until they grant permissions to others
+      this.whiteboardService.updatePermissions(data.roomId, []);
+      
+      // Thông báo cho tất cả client trong phòng về việc thay đổi creator
+      client.to(data.roomId).emit('sfu:creator-changed', { 
+        peerId: longestUser.peerId,
+        isCreator: true 
+      });
+      
+      // Notify all clients that whiteboard permissions have been reset
+      client.to(data.roomId).emit('whiteboard:permissions', { allowed: [] });
     }
 
     // Thông báo cho mọi người về việc rời đi
@@ -1361,6 +1422,18 @@ export class SfuGateway implements OnGatewayInit {
     const permissions = this.whiteboardService.getPermissions(roomId);
 
     client.emit('whiteboard:data', { whiteboard });
+    client.emit('whiteboard:permissions', { allowed: permissions });
+  }
+
+  @SubscribeMessage('whiteboard:get-permissions')
+  handleGetWhiteboardPermissions(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string },
+  ) {
+    const { roomId } = data;
+    const permissions = this.whiteboardService.getPermissions(roomId);
+    
+    // Send permissions to the requesting client
     client.emit('whiteboard:permissions', { allowed: permissions });
   }
 
