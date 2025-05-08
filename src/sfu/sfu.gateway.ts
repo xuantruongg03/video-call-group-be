@@ -10,9 +10,10 @@ import {
 import * as fs from 'fs';
 import { types as mediasoupTypes } from 'mediasoup';
 import { Server, Socket } from 'socket.io';
+import { VoteOption, VoteSession } from 'src/interfaces/voting.interface';
+import { PositionMouse } from 'src/interfaces/whiteboard.inteface';
 import { WhiteboardService } from '../whiteboard/whiteboard.service';
 import { SfuService } from './sfu.service';
-import { MouseUser, PositionMouse } from 'src/interfaces/whiteboard.inteface';
 
 interface Participant {
   socketId: string;
@@ -65,6 +66,7 @@ export class SfuGateway implements OnGatewayInit {
   private streams = new Map<string, Stream>();
   private producerToStream = new Map<string, Stream>();
   private roomMessages = new Map<string, ChatMessage[]>();
+  private activeVotes = new Map<string, VoteSession>();
 
   constructor(
     private readonly sfuService: SfuService,
@@ -204,12 +206,12 @@ export class SfuGateway implements OnGatewayInit {
     // If creator of the room exists, notify the joining user
     if (!isCreator) {
       const creator = Array.from(this.rooms.get(roomId)?.values() || []).find(user => user.isCreator);
-      if (creator) {
-        client.emit('sfu:creator-changed', {
-          peerId: creator.peerId,
-          isCreator: true
-        });
-      }
+      // if (creator) {
+      //   client.emit('sfu:creator-changed', {
+      //     peerId: creator.peerId,
+      //     isCreator: true
+      //   });
+      // }
     }
 
     this.io.to(roomId).emit('sfu:new-peer-join', {
@@ -1432,8 +1434,6 @@ export class SfuGateway implements OnGatewayInit {
   ) {
     const { roomId } = data;
     const permissions = this.whiteboardService.getPermissions(roomId);
-    
-    // Send permissions to the requesting client
     client.emit('whiteboard:permissions', { allowed: permissions });
   }
 
@@ -1447,7 +1447,6 @@ export class SfuGateway implements OnGatewayInit {
 
     if (!participant) return;
 
-    // Kiểm tra xem người dùng có quyền vẽ không
     if (!this.whiteboardService.canUserDraw(roomId, participant.peerId)) {
       client.emit('whiteboard:error', {
         message: 'Bạn không có quyền xóa bảng trắng này',
@@ -1456,10 +1455,176 @@ export class SfuGateway implements OnGatewayInit {
       return;
     }
 
-    // Xóa dữ liệu bảng trắng
     this.whiteboardService.clearWhiteboard(roomId);
 
-    // Thông báo cho tất cả người dùng trong phòng
     this.io.to(roomId).emit('whiteboard:clear');
+  }
+
+  //======================================================VOTING======================================================
+  @SubscribeMessage('sfu:create-vote')
+  handleCreateVote(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      question: string;
+      options: VoteOption[];
+      creatorId: string;
+    },
+  ) {
+    const { roomId, question, options, creatorId } = data;
+    const participant = this.getParticipantBySocketId(client.id);
+
+    if (!participant) {
+      return { success: false, error: 'Người dùng không tồn tại' };
+    }
+
+    if (!participant.isCreator) {
+      return { success: false, error: 'Chỉ người tổ chức mới có thể tạo phiên bỏ phiếu' };
+    }
+
+    if (this.activeVotes.has(roomId)) {
+      return { success: false, error: 'Đã có một phiên bỏ phiếu đang diễn ra' };
+    }
+
+    const voteSession: VoteSession = {
+      id: Math.random().toString(36).substring(2, 15),
+      creatorId,
+      question,
+      options,
+      participants: [],
+      isActive: true,
+      createdAt: new Date(),
+    };
+
+    this.activeVotes.set(roomId, voteSession);
+
+    this.io.to(roomId).emit('sfu:vote-session', voteSession);
+
+    return { success: true };
+  }
+
+  @SubscribeMessage('sfu:submit-vote')
+  handleSubmitVote(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      voteId: string;
+      optionId: string;
+      voterId: string;
+    },
+  ) {
+    const { roomId, voteId, optionId, voterId } = data;
+
+    const voteSession = this.activeVotes.get(roomId);
+
+    if (!voteSession || voteSession.id !== voteId) {
+      return { success: false, error: 'Phiên bỏ phiếu không tồn tại' };
+    }
+
+    if (!voteSession.isActive) {
+      return { success: false, error: 'Phiên bỏ phiếu đã kết thúc' };
+    }
+
+    if (voteSession.participants.includes(voterId)) {
+      return { success: false, error: 'Bạn đã bỏ phiếu rồi' };
+    }
+
+    const option = voteSession.options.find((opt) => opt.id === optionId);
+    if (!option) {
+      return { success: false, error: 'Tùy chọn không tồn tại' };
+    }
+
+    option.votes += 1;
+    voteSession.participants.push(voterId);
+
+    this.activeVotes.set(roomId, voteSession);
+
+    return { success: true };
+  }
+
+  @SubscribeMessage('sfu:get-vote-results')
+  handleGetVoteResults(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      voteId: string;
+    },
+  ) {
+    const { roomId, voteId } = data;
+    const voteSession = this.activeVotes.get(roomId);
+
+    if (!voteSession || voteSession.id !== voteId) {
+      return { success: false, error: 'Phiên bỏ phiếu không tồn tại' };
+    }
+
+    const totalVotes = voteSession.options.reduce(
+      (sum, option) => sum + option.votes,
+      0,
+    );
+
+    client.emit('sfu:vote-results', {
+      options: voteSession.options,
+      totalVotes,
+    });
+
+    return { success: true };
+  }
+
+  @SubscribeMessage('sfu:end-vote')
+  handleEndVote(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      voteId: string;
+      creatorId: string;
+    },
+  ) {
+    const { roomId, voteId, creatorId } = data;
+
+    const voteSession = this.activeVotes.get(roomId);
+
+    if (!voteSession || voteSession.id !== voteId) {
+      return { success: false, error: 'Phiên bỏ phiếu không tồn tại' };
+    }
+
+    if (voteSession.creatorId !== creatorId) {
+      return {
+        success: false,
+        error: 'Chỉ người tạo mới có thể kết thúc phiên bỏ phiếu',
+      };
+    }
+
+    voteSession.isActive = false;
+    this.activeVotes.delete(roomId);
+
+    const totalVotes = voteSession.options.reduce(
+      (sum, option) => sum + option.votes,
+      0,
+    );
+
+    this.io.to(roomId).emit('sfu:vote-results', {
+      options: voteSession.options,
+      totalVotes,
+    });
+
+    return { success: true };
+  }
+
+  @SubscribeMessage('sfu:get-active-vote')
+  handleGetActiveVote(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+    },
+  ) {
+    const { roomId } = data;
+    const activeVote = this.activeVotes.get(roomId);
+
+    return { activeVote };
   }
 }
