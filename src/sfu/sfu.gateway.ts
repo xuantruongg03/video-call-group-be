@@ -318,16 +318,12 @@ export class SfuGateway implements OnGatewayInit {
     const participant = room.get(data.participantId);
     const isCreator = participant?.isCreator || false;
 
-    //Xoá tất cả stream của người dùng
     for (const [streamId, stream] of Array.from(this.streams.entries())) {
       if (stream.publisherId === data.participantId) {
-        // Xóa producer từ service
         this.sfuService.removeProducer(data.roomId, streamId);
 
-        // Xóa stream
         this.streams.delete(streamId);
 
-        // Thông báo cho các client khác
         client.to(data.roomId).emit('sfu:stream-removed', {
           streamId,
           publisherId: data.participantId,
@@ -335,17 +331,14 @@ export class SfuGateway implements OnGatewayInit {
       }
     }
 
-    //Xoá người dùng khỏi phòng
     room.delete(data.participantId);
     client.emit('sfu:user-removed', {
       peerId: data.participantId,
     });
-    //thông báo cho các người dùng trong phòng
     client.to(data.roomId).emit('sfu:user-removed', {
       peerId: data.participantId,
     });
 
-    // If the removed user was the creator, assign creator status to the longest participant
     if (isCreator && room.size > 0) {
       const users = Array.from(room.values());
       const longestUser = users.reduce((max, current) => {
@@ -353,19 +346,13 @@ export class SfuGateway implements OnGatewayInit {
       }, users[0]);
       
       if (longestUser) {
-        // Update creator status
         longestUser.isCreator = true;
-        
-        // Reset whiteboard permissions when creator changes
         this.whiteboardService.updatePermissions(data.roomId, []);
-        
-        // Notify all clients about creator change
         this.io.to(data.roomId).emit('sfu:creator-changed', {
           peerId: longestUser.peerId,
           isCreator: true
         });
         
-        // Notify all clients that whiteboard permissions have been reset
         this.io.to(data.roomId).emit('whiteboard:permissions', { allowed: [] });
       }
     }
@@ -376,24 +363,17 @@ export class SfuGateway implements OnGatewayInit {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string },
   ) {
-    // Lấy danh sách người dùng trong phòng
     const room = this.rooms.get(data.roomId);
     if (!room) {
-      // client.emit('sfu:error', {
-      //   message: 'Room not found',
-      //   code: 'ROOM_NOT_FOUND',
-      // });
       return;
     }
 
-    // Lấy danh sách người dùng trong phòng
     const users = Array.from(room.values()).map((participant) => ({
       peerId: participant.peerId,
       isCreator: participant.isCreator,
       timeArrive: participant.timeArrive,
     }));
 
-    // Gửi danh sách người dùng cho client
     client.emit('sfu:users', users);
   }
 
