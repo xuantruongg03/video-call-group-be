@@ -11,10 +11,11 @@ import * as fs from 'fs';
 import { types as mediasoupTypes } from 'mediasoup';
 import { Server, Socket } from 'socket.io';
 import { VoteOption, VoteSession } from 'src/interfaces/voting.interface';
+import { QuizOption, QuizQuestion, QuizParticipantResponse, QuizSession } from 'src/interfaces/quiz.interface';
 import { PositionMouse } from 'src/interfaces/whiteboard.inteface';
 import { WhiteboardService } from '../whiteboard/whiteboard.service';
 import { SfuService } from './sfu.service';
-
+import { nanoid } from 'nanoid';
 interface Participant {
   socketId: string;
   peerId: string;
@@ -67,6 +68,7 @@ export class SfuGateway implements OnGatewayInit {
   private producerToStream = new Map<string, Stream>();
   private roomMessages = new Map<string, ChatMessage[]>();
   private activeVotes = new Map<string, VoteSession>();
+  private activeQuizzes = new Map<string, QuizSession>();
 
   constructor(
     private readonly sfuService: SfuService,
@@ -1606,5 +1608,336 @@ export class SfuGateway implements OnGatewayInit {
     const activeVote = this.activeVotes.get(roomId);
 
     return { activeVote };
+  }
+
+  //======================================================QUIZ======================================================
+  @SubscribeMessage('sfu:create-quiz')
+  handleCreateQuiz(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      title: string;
+      questions: QuizQuestion[];
+      creatorId: string;
+    },
+  ) {
+    const { roomId, title, questions, creatorId } = data;
+    const participant = this.getParticipantBySocketId(client.id);
+
+    if (!participant) {
+      return { success: false, error: 'Người dùng không tồn tại' };
+    }
+
+    if (!participant.isCreator) {
+      return { success: false, error: 'Chỉ người tổ chức mới có thể tạo bài kiểm tra' };
+    }
+
+    const existingQuiz = this.activeQuizzes.get(roomId);
+    if (existingQuiz && existingQuiz.isActive) {
+      return { success: false, error: 'Đã có một bài kiểm tra đang diễn ra. Vui lòng kết thúc bài kiểm tra hiện tại trước khi tạo bài mới.' };
+    }
+
+    const quizSession: QuizSession = {
+      id: nanoid(),
+      creatorId,
+      title,
+      questions,
+      participants: [],
+      isActive: true,
+      createdAt: new Date(),
+    };
+
+    this.activeQuizzes.set(roomId, quizSession);
+
+    this.io.to(roomId).emit('sfu:quiz-session', quizSession);
+
+    return { success: true, quizId: quizSession.id };
+  }
+
+  @SubscribeMessage('sfu:start-quiz')
+  handleStartQuiz(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      quizId: string;
+    },
+  ) {
+    const { roomId, quizId } = data;
+    const participant = this.getParticipantBySocketId(client.id);
+
+    if (!participant) {
+      return { success: false, error: 'Người dùng không tồn tại' };
+    }
+
+    const quizSession = this.activeQuizzes.get(roomId);
+
+    if (!quizSession || quizSession.id !== quizId) {
+      return { success: false, error: 'Bài kiểm tra không tồn tại' };
+    }
+
+    quizSession.isActive = true;
+    quizSession.participants.push({
+      participantId: participant.peerId,
+      completed: false,
+      score: undefined,
+      answers: [],
+      startedAt: new Date(),
+    });
+    this.activeQuizzes.set(roomId, quizSession);
+    return { success: true, quizId: quizSession.id };
+  }
+
+  @SubscribeMessage('sfu:complete-quiz')
+  handleCompleteQuiz(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      participantId: string;
+      answers: QuizParticipantResponse;
+    },
+  ) {
+    const { roomId, participantId, answers } = data;
+    
+    const quizSession = this.activeQuizzes.get(roomId);
+    
+    if (!quizSession || quizSession.id !== answers.quizId) {
+      return { success: false, error: 'Bài kiểm tra không tồn tại' };
+    }
+    
+    const participantEntry = quizSession.participants.find(p => p.participantId === participantId);
+    
+    if (!participantEntry) {
+      return { success: false, error: 'Bạn chưa bắt đầu làm bài kiểm tra' };
+    }
+    
+    participantEntry.completed = true;
+    participantEntry.finishedAt = new Date();
+    
+    participantEntry.answers = answers.questions.map(q => ({
+      questionId: q.questionId,
+      selectedOptions: q.selectedOptions || [],
+      essayAnswer: q.essayAnswer || ''
+    }));
+    
+    let score = 0;
+    let totalPossibleScore = 0;
+    
+    quizSession.questions.forEach(question => {
+      if ((question.type === 'multiple-choice' || question.type === 'one-choice') && question.correctAnswers && question.correctAnswers.length > 0) {
+        const answer = participantEntry.answers.find(a => a.questionId === question.id);
+        totalPossibleScore++;
+        
+        if (!answer || !answer.selectedOptions || answer.selectedOptions.length === 0) {
+          return;
+        }
+        
+        if (question.type === 'one-choice') {
+          if (answer.selectedOptions.length === 1 && question.correctAnswers.includes(answer.selectedOptions[0])) {
+            score++;
+          }
+        } else {
+          const correctAnswersSet = new Set(question.correctAnswers);
+          const selectedAnswersSet = new Set(answer.selectedOptions);
+          
+          if (correctAnswersSet.size === selectedAnswersSet.size && 
+              answer.selectedOptions.every(option => correctAnswersSet.has(option))) {
+            score++;
+          }
+        }
+      }
+    });
+    
+    participantEntry.score = totalPossibleScore > 0 ? score : undefined;
+    this.activeQuizzes.set(roomId, quizSession);
+    
+    return { success: true, results: {
+      quizId: answers.quizId,
+      score,
+      totalPossibleScore,
+      startedAt: participantEntry.startedAt,
+      finishedAt: participantEntry.finishedAt,
+      answers: quizSession.questions.map(question => {
+        const participantAnswer = participantEntry.answers.find(a => a.questionId === question.id);
+        return {
+          questionId: question.id,
+          text: question.text,
+          type: question.type,
+          correctAnswers: question.correctAnswers,
+          selectedOptions: participantAnswer?.selectedOptions || [],
+          essayAnswer: participantAnswer?.essayAnswer || '',
+          modelAnswer: question.answer || ''
+        };
+      })
+    } };
+  }
+
+  @SubscribeMessage('sfu:end-quiz')
+  handleEndQuiz(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      quizId: string;
+      creatorId: string;
+    },
+  ) {
+    const { roomId, quizId, creatorId } = data;
+    const quizSession = this.activeQuizzes.get(roomId);
+    
+    if (!quizSession || quizSession.id !== quizId) {
+      return { success: false, error: 'Bài kiểm tra không tồn tại' };
+    }
+    
+    if (quizSession.creatorId !== creatorId) {
+      return {
+        success: false,
+        error: 'Chỉ người tạo mới có thể kết thúc bài kiểm tra',
+      };
+    }
+    
+    quizSession.isActive = false;
+    
+    this.io.to(roomId).emit('sfu:quiz-ended', { quizId });
+    
+    return { success: true };
+  }
+
+  @SubscribeMessage('sfu:get-active-quiz')
+  handleGetActiveQuiz(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+    },
+  ) {
+    const { roomId } = data;
+    const activeQuiz = this.activeQuizzes.get(roomId);
+    
+    return { activeQuiz };
+  }
+
+  @SubscribeMessage('sfu:get-quiz-results')
+  handleGetQuizResults(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      quizId: string;
+      participantId: string;
+    },
+  ) {
+    const { quizId, participantId } = data;
+    const participant = this.getParticipantBySocketId(client.id);
+    
+    if (!participant) {
+      return { success: false, error: 'Người dùng không tồn tại' };
+    }
+    
+    const roomId = this.getParticipantRoom(participant);
+    
+    if (!roomId) {
+      return { success: false, error: 'Phòng không tồn tại' };
+    }
+    
+    const quizSession = this.activeQuizzes.get(roomId);
+    
+    if (!quizSession || quizSession.id !== quizId) {
+      return { success: false, error: 'Bài kiểm tra không tồn tại' };
+    }
+    
+    const participantEntry = quizSession.participants.find(p => p.participantId === participantId);
+    
+    if (!participantEntry || !participantEntry.completed) {
+      return { success: false, error: 'Chưa có kết quả bài kiểm tra' };
+    }
+    
+    return { 
+      success: true, 
+      results: {
+        quizId,
+        score: participantEntry.score || 0,
+        totalPossibleScore: quizSession.questions.filter(q => 
+          (q.type === 'multiple-choice' || q.type === 'one-choice') && q.correctAnswers
+        ).length,
+        startedAt: participantEntry.startedAt,
+        finishedAt: participantEntry.finishedAt,
+        answers: quizSession.questions.map(question => {
+          const participantAnswer = participantEntry.answers.find(a => a.questionId === question.id);
+          return {
+            questionId: question.id,
+            text: question.text,
+            type: question.type,
+            correctAnswers: question.correctAnswers,
+            selectedOptions: participantAnswer?.selectedOptions || [],
+            essayAnswer: participantAnswer?.essayAnswer || '',
+            modelAnswer: question.answer || ''
+          };
+        })
+      }
+    };
+  }
+
+  @SubscribeMessage('sfu:get-all-quiz-results')
+  handleGetAllQuizResults(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      quizId: string;
+    },
+  ) {
+    const { roomId, quizId } = data;
+    const participant = this.getParticipantBySocketId(client.id);
+    
+    if (!participant) {
+      return { success: false, error: 'Người dùng không tồn tại' };
+    }
+    
+    if (!participant.isCreator) {
+      return { success: false, error: 'Chỉ người tạo phòng mới có thể xem kết quả của mọi người' };
+    }
+    
+    const quizSession = this.activeQuizzes.get(roomId);
+    
+    if (!quizSession || quizSession.id !== quizId) {
+      return { success: false, error: 'Bài kiểm tra không tồn tại' };
+    }
+    
+    const completedParticipants = quizSession.participants.filter(p => p.completed);
+    
+    if (completedParticipants.length === 0) {
+      return { success: false, error: 'Chưa có học sinh nào hoàn thành bài kiểm tra' };
+    }
+    
+    const allResults = completedParticipants.map(participantEntry => {
+      return {
+        participantId: participantEntry.participantId,
+        score: participantEntry.score || 0,
+        totalPossibleScore: quizSession.questions.filter(q => 
+          (q.type === 'multiple-choice' || q.type === 'one-choice') && q.correctAnswers
+        ).length,
+        startedAt: participantEntry.startedAt,
+        finishedAt: participantEntry.finishedAt,
+        answers: quizSession.questions.map(question => {
+          const participantAnswer = participantEntry.answers.find(a => a.questionId === question.id);
+          return {
+            questionId: question.id,
+            text: question.text,
+            type: question.type,
+            correctAnswers: question.correctAnswers,
+            selectedOptions: participantAnswer?.selectedOptions || [],
+            essayAnswer: participantAnswer?.essayAnswer || '',
+            modelAnswer: question.answer || ''
+          };
+        })
+      };
+    });
+    
+    return { 
+      success: true, 
+      allResults: allResults
+    };
   }
 }
