@@ -971,76 +971,54 @@ export class SfuGateway implements OnGatewayInit {
 
     const room = this.rooms.get(data.roomId);
     if (!room) return;
-    // Đóng tất cả transport
     for (const transport of participant.transports.values()) {
       transport.close();
     }
 
-    // Xóa tất cả stream của người dùng
     for (const [streamId, stream] of Array.from(this.streams.entries())) {
       if (stream.publisherId === participant.peerId) {
-        // Xóa producer từ service
         this.sfuService.removeProducer(data.roomId, streamId);
 
-        // Xóa stream
         this.streams.delete(streamId);
 
-        // Thông báo cho các client khác
         client.to(data.roomId).emit('sfu:stream-removed', {
           streamId,
           publisherId: participant.peerId,
         });
 
-        client.to(data.roomId).emit('sfu:remove-user', {
-          roomId: data.roomId,
-          participantId: participant.peerId,
-        });
+        // client.to(data.roomId).emit('sfu:remove-user', {
+        //   roomId: data.roomId,
+        //   participantId: participant.peerId,
+        // });
       }
     }
 
-    // Xóa participant khỏi phòng
     room.delete(participant.peerId);
 
-    //participant nào ở trong phòng lâu nhất thì đặt làm creator
     const users = Array.from(room.values());
     const longestUser = users.reduce((max, current) => {
       return current.timeArrive > max.timeArrive ? current : max;
     }, users[0]);
 
     if (longestUser) {
-      // Cập nhật creator
       longestUser.isCreator = true;
+      // this.whiteboardService.updatePermissions(data.roomId, []);
       
-      // Reset whiteboard permissions when creator changes
-      // This ensures only the new creator can draw until they grant permissions to others
-      this.whiteboardService.updatePermissions(data.roomId, []);
-      
-      // Thông báo cho tất cả client trong phòng về việc thay đổi creator
       client.to(data.roomId).emit('sfu:creator-changed', { 
         peerId: longestUser.peerId,
         isCreator: true 
       });
       
-      // Notify all clients that whiteboard permissions have been reset
-      client.to(data.roomId).emit('whiteboard:permissions', { allowed: [] });
+      // client.to(data.roomId).emit('whiteboard:permissions', { allowed: [] });
     }
 
-    // Thông báo cho mọi người về việc rời đi
     client
       .to(data.roomId)
       .emit('sfu:peer-left', { peerId: participant.peerId });
-
-    // Dọn dẹp phòng trống
     if (room.size === 0) {
-      // Đóng mediaRoom
       this.sfuService.closeMediaRoom(data.roomId);
-
-      // Xóa phòng
       this.rooms.delete(data.roomId);
-      console.log(`Room ${data.roomId} is empty, deleted`);
     }
-
-    // Cập nhật service với dữ liệu phòng mới nhất
     this.sfuService.updateRooms(this.rooms);
   }
 
@@ -1768,7 +1746,8 @@ export class SfuGateway implements OnGatewayInit {
           correctAnswers: question.correctAnswers,
           selectedOptions: participantAnswer?.selectedOptions || [],
           essayAnswer: participantAnswer?.essayAnswer || '',
-          modelAnswer: question.answer || ''
+          modelAnswer: question.answer || '',
+          options: question.options || []
         };
       })
     } };
@@ -1872,7 +1851,8 @@ export class SfuGateway implements OnGatewayInit {
             correctAnswers: question.correctAnswers,
             selectedOptions: participantAnswer?.selectedOptions || [],
             essayAnswer: participantAnswer?.essayAnswer || '',
-            modelAnswer: question.answer || ''
+            modelAnswer: question.answer || '',
+            options: question.options || []
           };
         })
       }
@@ -1929,7 +1909,8 @@ export class SfuGateway implements OnGatewayInit {
             correctAnswers: question.correctAnswers,
             selectedOptions: participantAnswer?.selectedOptions || [],
             essayAnswer: participantAnswer?.essayAnswer || '',
-            modelAnswer: question.answer || ''
+            modelAnswer: question.answer || '',
+            options: question.options || []
           };
         })
       };
