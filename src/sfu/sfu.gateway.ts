@@ -23,7 +23,7 @@ import { SfuService } from './sfu.service';
 import { nanoid } from 'nanoid';
 import { BehaviorService } from './behavior.service';
 import { UserEvent } from 'src/interfaces/behavior';
-
+import { ChatMessage } from 'src/interfaces/chat';
 interface Participant {
   socketId: string;
   peerId: string;
@@ -41,15 +41,6 @@ interface Stream {
   producerId: string;
   metadata: any;
   rtpParameters: mediasoupTypes.RtpParameters;
-}
-
-interface ChatMessage {
-  id: string;
-  roomId: string;
-  sender: string;
-  senderName: string;
-  text: string;
-  timestamp: string;
 }
 
 @WebSocketGateway(3002, {
@@ -1167,6 +1158,56 @@ export class SfuGateway implements OnGatewayInit {
       senderName: data.message.senderName,
       text: data.message.text,
       timestamp: new Date().toISOString(),
+    };
+
+    // Lưu tin nhắn vào lịch sử
+    if (this.roomMessages.has(roomId)) {
+      this.roomMessages.get(roomId)?.push(newMessage);
+    } else {
+      this.roomMessages.set(roomId, [newMessage]);
+    }
+
+    // Giới hạn kích thước lịch sử (chỉ lưu 100 tin nhắn gần nhất)
+    const messages = this.roomMessages.get(roomId);
+    if (messages && messages.length > 100) {
+      this.roomMessages.set(roomId, messages.slice(-100));
+    }
+
+    // Phát tin nhắn đến tất cả người dùng trong phòng
+    this.io.to(roomId).emit('chat:message', newMessage);
+  }
+
+  @SubscribeMessage('chat:file')
+  handleChatFile(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: {
+      roomId: string;
+      message: {
+        sender: string;
+        senderName: string;
+        text: string;
+        fileUrl: string;
+        fileName: string;
+        fileType: string;
+        fileSize: number;
+        isImage: boolean;
+      };
+    },
+  ) {
+    const roomId = data.roomId;
+    const newMessage: ChatMessage = {
+      id: Date.now().toString(),
+      roomId,
+      sender: data.message.sender,
+      senderName: data.message.senderName,
+      text: data.message.text,
+      timestamp: new Date().toISOString(),
+      fileUrl: data.message.fileUrl,
+      fileName: data.message.fileName,
+      fileType: data.message.fileType,
+      fileSize: data.message.fileSize,
+      isImage: data.message.isImage,
     };
 
     // Lưu tin nhắn vào lịch sử
