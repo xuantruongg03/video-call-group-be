@@ -11,11 +11,19 @@ import * as fs from 'fs';
 import { types as mediasoupTypes } from 'mediasoup';
 import { Server, Socket } from 'socket.io';
 import { VoteOption, VoteSession } from 'src/interfaces/voting.interface';
-import { QuizOption, QuizQuestion, QuizParticipantResponse, QuizSession } from 'src/interfaces/quiz.interface';
+import {
+  QuizOption,
+  QuizQuestion,
+  QuizParticipantResponse,
+  QuizSession,
+} from 'src/interfaces/quiz.interface';
 import { PositionMouse } from 'src/interfaces/whiteboard.inteface';
 import { WhiteboardService } from '../whiteboard/whiteboard.service';
 import { SfuService } from './sfu.service';
 import { nanoid } from 'nanoid';
+import { BehaviorService } from './behavior.service';
+import { UserEvent } from 'src/interfaces/behavior';
+
 interface Participant {
   socketId: string;
   peerId: string;
@@ -73,6 +81,7 @@ export class SfuGateway implements OnGatewayInit {
   constructor(
     private readonly sfuService: SfuService,
     private readonly whiteboardService: WhiteboardService,
+    private readonly behaviorService: BehaviorService,
   ) {}
 
   afterInit() {
@@ -147,7 +156,7 @@ export class SfuGateway implements OnGatewayInit {
     };
 
     this.rooms.get(roomId)?.set(peerId, participant);
-    
+
     // If this user is the creator, notify all users including the new one
     // if (isCreator) {
     //   this.io.to(roomId).emit('sfu:creator-changed', {
@@ -207,7 +216,9 @@ export class SfuGateway implements OnGatewayInit {
 
     // If creator of the room exists, notify the joining user
     if (!isCreator) {
-      const creator = Array.from(this.rooms.get(roomId)?.values() || []).find(user => user.isCreator);
+      const creator = Array.from(this.rooms.get(roomId)?.values() || []).find(
+        (user) => user.isCreator,
+      );
       // if (creator) {
       //   client.emit('sfu:creator-changed', {
       //     peerId: creator.peerId,
@@ -346,15 +357,15 @@ export class SfuGateway implements OnGatewayInit {
       const longestUser = users.reduce((max, current) => {
         return current.timeArrive > max.timeArrive ? current : max;
       }, users[0]);
-      
+
       if (longestUser) {
         longestUser.isCreator = true;
         this.whiteboardService.updatePermissions(data.roomId, []);
         this.io.to(data.roomId).emit('sfu:creator-changed', {
           peerId: longestUser.peerId,
-          isCreator: true
+          isCreator: true,
         });
-        
+
         this.io.to(data.roomId).emit('whiteboard:permissions', { allowed: [] });
       }
     }
@@ -594,7 +605,6 @@ export class SfuGateway implements OnGatewayInit {
       transportId: string;
     },
   ) {
-    console.log(`Consume request for stream: ${data.streamId}`);
     const participant = this.getParticipantBySocketId(client.id);
     if (!participant) {
       client.emit('sfu:error', {
@@ -876,7 +886,6 @@ export class SfuGateway implements OnGatewayInit {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { streamId: string; metadata: any },
   ) {
-    console.log(`Update stream: ${data.streamId}, metadata:`, data.metadata);
 
     const participant = this.getParticipantBySocketId(client.id);
     if (!participant) return;
@@ -917,12 +926,6 @@ export class SfuGateway implements OnGatewayInit {
           publisherId: participant.peerId,
           metadata: streamById.metadata,
         });
-
-        console.log(
-          'Stream updated by ID:',
-          data.streamId,
-          streamById.metadata,
-        );
         return;
       }
 
@@ -957,14 +960,13 @@ export class SfuGateway implements OnGatewayInit {
       publisherId: participant.peerId,
       metadata: stream.metadata,
     });
-
-    console.log('Stream updated:', data.streamId, stream.metadata);
   }
 
   @SubscribeMessage('sfu:leave-room')
   async handleLeaveRoom(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { roomId: string },
+    @MessageBody()
+    data: { roomId: string; peerId?: string; behaviorLogs?: any[] },
   ) {
     const participant = this.getParticipantBySocketId(client.id);
     if (!participant) return;
@@ -1003,12 +1005,12 @@ export class SfuGateway implements OnGatewayInit {
     if (longestUser) {
       longestUser.isCreator = true;
       // this.whiteboardService.updatePermissions(data.roomId, []);
-      
-      client.to(data.roomId).emit('sfu:creator-changed', { 
+
+      client.to(data.roomId).emit('sfu:creator-changed', {
         peerId: longestUser.peerId,
-        isCreator: true 
+        isCreator: true,
       });
-      
+
       // client.to(data.roomId).emit('whiteboard:permissions', { allowed: [] });
     }
 
@@ -1440,7 +1442,10 @@ export class SfuGateway implements OnGatewayInit {
     }
 
     if (!participant.isCreator) {
-      return { success: false, error: 'Chỉ người tổ chức mới có thể tạo phiên bỏ phiếu' };
+      return {
+        success: false,
+        error: 'Chỉ người tổ chức mới có thể tạo phiên bỏ phiếu',
+      };
     }
 
     if (this.activeVotes.has(roomId)) {
@@ -1608,12 +1613,19 @@ export class SfuGateway implements OnGatewayInit {
     }
 
     if (!participant.isCreator) {
-      return { success: false, error: 'Chỉ người tổ chức mới có thể tạo bài kiểm tra' };
+      return {
+        success: false,
+        error: 'Chỉ người tổ chức mới có thể tạo bài kiểm tra',
+      };
     }
 
     const existingQuiz = this.activeQuizzes.get(roomId);
     if (existingQuiz && existingQuiz.isActive) {
-      return { success: false, error: 'Đã có một bài kiểm tra đang diễn ra. Vui lòng kết thúc bài kiểm tra hiện tại trước khi tạo bài mới.' };
+      return {
+        success: false,
+        error:
+          'Đã có một bài kiểm tra đang diễn ra. Vui lòng kết thúc bài kiểm tra hiện tại trước khi tạo bài mới.',
+      };
     }
 
     const quizSession: QuizSession = {
@@ -1678,79 +1690,104 @@ export class SfuGateway implements OnGatewayInit {
     },
   ) {
     const { roomId, participantId, answers } = data;
-    
+
     const quizSession = this.activeQuizzes.get(roomId);
-    
+
     if (!quizSession || quizSession.id !== answers.quizId) {
       return { success: false, error: 'Bài kiểm tra không tồn tại' };
     }
-    
-    const participantEntry = quizSession.participants.find(p => p.participantId === participantId);
-    
+
+    const participantEntry = quizSession.participants.find(
+      (p) => p.participantId === participantId,
+    );
+
     if (!participantEntry) {
       return { success: false, error: 'Bạn chưa bắt đầu làm bài kiểm tra' };
     }
-    
+
     participantEntry.completed = true;
     participantEntry.finishedAt = new Date();
-    
-    participantEntry.answers = answers.questions.map(q => ({
+
+    participantEntry.answers = answers.questions.map((q) => ({
       questionId: q.questionId,
       selectedOptions: q.selectedOptions || [],
-      essayAnswer: q.essayAnswer || ''
+      essayAnswer: q.essayAnswer || '',
     }));
-    
+
     let score = 0;
     let totalPossibleScore = 0;
-    
-    quizSession.questions.forEach(question => {
-      if ((question.type === 'multiple-choice' || question.type === 'one-choice') && question.correctAnswers && question.correctAnswers.length > 0) {
-        const answer = participantEntry.answers.find(a => a.questionId === question.id);
+
+    quizSession.questions.forEach((question) => {
+      if (
+        (question.type === 'multiple-choice' ||
+          question.type === 'one-choice') &&
+        question.correctAnswers &&
+        question.correctAnswers.length > 0
+      ) {
+        const answer = participantEntry.answers.find(
+          (a) => a.questionId === question.id,
+        );
         totalPossibleScore++;
-        
-        if (!answer || !answer.selectedOptions || answer.selectedOptions.length === 0) {
+
+        if (
+          !answer ||
+          !answer.selectedOptions ||
+          answer.selectedOptions.length === 0
+        ) {
           return;
         }
-        
+
         if (question.type === 'one-choice') {
-          if (answer.selectedOptions.length === 1 && question.correctAnswers.includes(answer.selectedOptions[0])) {
+          if (
+            answer.selectedOptions.length === 1 &&
+            question.correctAnswers.includes(answer.selectedOptions[0])
+          ) {
             score++;
           }
         } else {
           const correctAnswersSet = new Set(question.correctAnswers);
           const selectedAnswersSet = new Set(answer.selectedOptions);
-          
-          if (correctAnswersSet.size === selectedAnswersSet.size && 
-              answer.selectedOptions.every(option => correctAnswersSet.has(option))) {
+
+          if (
+            correctAnswersSet.size === selectedAnswersSet.size &&
+            answer.selectedOptions.every((option) =>
+              correctAnswersSet.has(option),
+            )
+          ) {
             score++;
           }
         }
       }
     });
-    
+
     participantEntry.score = totalPossibleScore > 0 ? score : undefined;
     this.activeQuizzes.set(roomId, quizSession);
-    
-    return { success: true, results: {
-      quizId: answers.quizId,
-      score,
-      totalPossibleScore,
-      startedAt: participantEntry.startedAt,
-      finishedAt: participantEntry.finishedAt,
-      answers: quizSession.questions.map(question => {
-        const participantAnswer = participantEntry.answers.find(a => a.questionId === question.id);
-        return {
-          questionId: question.id,
-          text: question.text,
-          type: question.type,
-          correctAnswers: question.correctAnswers,
-          selectedOptions: participantAnswer?.selectedOptions || [],
-          essayAnswer: participantAnswer?.essayAnswer || '',
-          modelAnswer: question.answer || '',
-          options: question.options || []
-        };
-      })
-    } };
+
+    return {
+      success: true,
+      results: {
+        quizId: answers.quizId,
+        score,
+        totalPossibleScore,
+        startedAt: participantEntry.startedAt,
+        finishedAt: participantEntry.finishedAt,
+        answers: quizSession.questions.map((question) => {
+          const participantAnswer = participantEntry.answers.find(
+            (a) => a.questionId === question.id,
+          );
+          return {
+            questionId: question.id,
+            text: question.text,
+            type: question.type,
+            correctAnswers: question.correctAnswers,
+            selectedOptions: participantAnswer?.selectedOptions || [],
+            essayAnswer: participantAnswer?.essayAnswer || '',
+            modelAnswer: question.answer || '',
+            options: question.options || [],
+          };
+        }),
+      },
+    };
   }
 
   @SubscribeMessage('sfu:end-quiz')
@@ -1765,22 +1802,22 @@ export class SfuGateway implements OnGatewayInit {
   ) {
     const { roomId, quizId, creatorId } = data;
     const quizSession = this.activeQuizzes.get(roomId);
-    
+
     if (!quizSession || quizSession.id !== quizId) {
       return { success: false, error: 'Bài kiểm tra không tồn tại' };
     }
-    
+
     if (quizSession.creatorId !== creatorId) {
       return {
         success: false,
         error: 'Chỉ người tạo mới có thể kết thúc bài kiểm tra',
       };
     }
-    
+
     quizSession.isActive = false;
-    
+
     this.io.to(roomId).emit('sfu:quiz-ended', { quizId });
-    
+
     return { success: true };
   }
 
@@ -1794,7 +1831,7 @@ export class SfuGateway implements OnGatewayInit {
   ) {
     const { roomId } = data;
     const activeQuiz = this.activeQuizzes.get(roomId);
-    
+
     return { activeQuiz };
   }
 
@@ -1809,41 +1846,47 @@ export class SfuGateway implements OnGatewayInit {
   ) {
     const { quizId, participantId } = data;
     const participant = this.getParticipantBySocketId(client.id);
-    
+
     if (!participant) {
       return { success: false, error: 'Người dùng không tồn tại' };
     }
-    
+
     const roomId = this.getParticipantRoom(participant);
-    
+
     if (!roomId) {
       return { success: false, error: 'Phòng không tồn tại' };
     }
-    
+
     const quizSession = this.activeQuizzes.get(roomId);
-    
+
     if (!quizSession || quizSession.id !== quizId) {
       return { success: false, error: 'Bài kiểm tra không tồn tại' };
     }
-    
-    const participantEntry = quizSession.participants.find(p => p.participantId === participantId);
-    
+
+    const participantEntry = quizSession.participants.find(
+      (p) => p.participantId === participantId,
+    );
+
     if (!participantEntry || !participantEntry.completed) {
       return { success: false, error: 'Chưa có kết quả bài kiểm tra' };
     }
-    
-    return { 
-      success: true, 
+
+    return {
+      success: true,
       results: {
         quizId,
         score: participantEntry.score || 0,
-        totalPossibleScore: quizSession.questions.filter(q => 
-          (q.type === 'multiple-choice' || q.type === 'one-choice') && q.correctAnswers
+        totalPossibleScore: quizSession.questions.filter(
+          (q) =>
+            (q.type === 'multiple-choice' || q.type === 'one-choice') &&
+            q.correctAnswers,
         ).length,
         startedAt: participantEntry.startedAt,
         finishedAt: participantEntry.finishedAt,
-        answers: quizSession.questions.map(question => {
-          const participantAnswer = participantEntry.answers.find(a => a.questionId === question.id);
+        answers: quizSession.questions.map((question) => {
+          const participantAnswer = participantEntry.answers.find(
+            (a) => a.questionId === question.id,
+          );
           return {
             questionId: question.id,
             text: question.text,
@@ -1852,10 +1895,10 @@ export class SfuGateway implements OnGatewayInit {
             selectedOptions: participantAnswer?.selectedOptions || [],
             essayAnswer: participantAnswer?.essayAnswer || '',
             modelAnswer: question.answer || '',
-            options: question.options || []
+            options: question.options || [],
           };
-        })
-      }
+        }),
+      },
     };
   }
 
@@ -1870,38 +1913,50 @@ export class SfuGateway implements OnGatewayInit {
   ) {
     const { roomId, quizId } = data;
     const participant = this.getParticipantBySocketId(client.id);
-    
+
     if (!participant) {
       return { success: false, error: 'Người dùng không tồn tại' };
     }
-    
+
     if (!participant.isCreator) {
-      return { success: false, error: 'Chỉ người tạo phòng mới có thể xem kết quả của mọi người' };
+      return {
+        success: false,
+        error: 'Chỉ người tạo phòng mới có thể xem kết quả của mọi người',
+      };
     }
-    
+
     const quizSession = this.activeQuizzes.get(roomId);
-    
+
     if (!quizSession || quizSession.id !== quizId) {
       return { success: false, error: 'Bài kiểm tra không tồn tại' };
     }
-    
-    const completedParticipants = quizSession.participants.filter(p => p.completed);
-    
+
+    const completedParticipants = quizSession.participants.filter(
+      (p) => p.completed,
+    );
+
     if (completedParticipants.length === 0) {
-      return { success: false, error: 'Chưa có học sinh nào hoàn thành bài kiểm tra' };
+      return {
+        success: false,
+        error: 'Chưa có học sinh nào hoàn thành bài kiểm tra',
+      };
     }
-    
-    const allResults = completedParticipants.map(participantEntry => {
+
+    const allResults = completedParticipants.map((participantEntry) => {
       return {
         participantId: participantEntry.participantId,
         score: participantEntry.score || 0,
-        totalPossibleScore: quizSession.questions.filter(q => 
-          (q.type === 'multiple-choice' || q.type === 'one-choice') && q.correctAnswers
+        totalPossibleScore: quizSession.questions.filter(
+          (q) =>
+            (q.type === 'multiple-choice' || q.type === 'one-choice') &&
+            q.correctAnswers,
         ).length,
         startedAt: participantEntry.startedAt,
         finishedAt: participantEntry.finishedAt,
-        answers: quizSession.questions.map(question => {
-          const participantAnswer = participantEntry.answers.find(a => a.questionId === question.id);
+        answers: quizSession.questions.map((question) => {
+          const participantAnswer = participantEntry.answers.find(
+            (a) => a.questionId === question.id,
+          );
           return {
             questionId: question.id,
             text: question.text,
@@ -1910,15 +1965,121 @@ export class SfuGateway implements OnGatewayInit {
             selectedOptions: participantAnswer?.selectedOptions || [],
             essayAnswer: participantAnswer?.essayAnswer || '',
             modelAnswer: question.answer || '',
-            options: question.options || []
+            options: question.options || [],
           };
-        })
+        }),
       };
     });
-    
-    return { 
-      success: true, 
-      allResults: allResults
+
+    return {
+      success: true,
+      allResults: allResults,
     };
+  }
+
+  //======================================================BEHAVIOR MONITOR======================================================
+
+  @SubscribeMessage('sfu:toggle-behavior-monitor')
+  async handleToggleBehaviorMonitor(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string; peerId: string; isActive: boolean },
+  ) {
+    const roomId = data.roomId;
+    const peerId = data.peerId;
+
+    const isCreator = this.sfuService.isCreatorOfRoom(peerId, roomId);
+    if (!isCreator) {
+      client.emit('sfu:error', {
+        message: 'Only room creator can toggle behavior monitoring',
+        code: 'NOT_ROOM_CREATOR',
+      });
+      return;
+    }
+
+    this.io.to(roomId).emit('sfu:behavior-monitor-state', {
+      isActive: data.isActive,
+    });
+
+    return { success: true };
+  }
+
+  @SubscribeMessage('sfu:send-behavior-logs')
+  handleSendBehaviorLogs(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { peerId: string; roomId: string; behaviorLogs: UserEvent[] },
+  ) {
+    if (!data.peerId) {
+      return { success: false, error: 'Người dùng không tồn tại' };
+    }
+
+    if (!data.behaviorLogs || data.behaviorLogs.length === 0) {
+      return { success: false, error: 'Không có dữ liệu để lưu' };
+    }
+
+    if (data.peerId && data.behaviorLogs && data.behaviorLogs.length > 0) {
+      this.behaviorService.saveUserBehavior(
+        data.peerId,
+        data.roomId,
+        data.behaviorLogs,
+      );
+      console.log("saveUserBehavior for", data.peerId, "with", data.behaviorLogs.length, "events");
+    }
+
+    return { success: true };
+  }
+
+  @SubscribeMessage('sfu:download-room-log')
+  async handleDownloadRoomLog(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string; peerId: string },
+  ) {
+    const roomId = data.roomId;
+    const peerId = data.peerId;
+
+    const isCreator = this.sfuService.isCreatorOfRoom(peerId, roomId);
+    if (!isCreator) {
+      return { success: false, error: 'Chỉ người tạo phòng mới có thể tải file log' };
+    }
+    
+    this.io.to(roomId).emit('sfu:behavior-monitor-state', {
+      isActive: false,
+    });
+
+    try {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const excel = await this.behaviorService.generateRoomLogExcel(roomId);
+      return { success: true, file: excel };
+    } catch (error) {
+      console.error('Error generating room log:', error);
+      return { success: false, error: 'Không thể tạo file log' };
+    }
+  }
+
+  @SubscribeMessage('sfu:download-user-log')
+  async handleDownloadUserLog(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string; peerId: string, creatorId: string },
+  ) {
+    const roomId = data.roomId;
+    const peerId = data.peerId;
+    const creatorId = data.creatorId;
+
+    const isCreator = this.sfuService.isCreatorOfRoom(creatorId, roomId);
+    if (!isCreator) {
+      return { success: false, error: 'Chỉ người tạo phòng mới có thể tải file log' };
+    }
+    
+    this.io.to(roomId).emit('sfu:request-user-log', {
+      peerId: peerId,
+    });
+
+    try {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const excel = await this.behaviorService.generateUserLogExcel(roomId, peerId);
+      return { success: true, file: excel };
+    } catch (error) {
+      console.error('Error generating user log:', error);
+      return { success: false, error: 'Không thể tạo file log' };
+    }
   }
 }
