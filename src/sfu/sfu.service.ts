@@ -45,6 +45,23 @@ export class SfuService {
         rtcMaxPort,
       });
 
+      this.webRtcServer = await this.worker.createWebRtcServer({
+        listenInfos: [
+          {
+            protocol: 'udp',
+            ip: this.configService.get('MEDIASOUP_LISTEN_IP') || '0.0.0.0',
+            announcedIp: this.configService.get('MEDIASOUP_ANNOUNCED_IP'),
+            port: parseInt(this.configService.get('MEDIASOUP_PORT') || '55555')
+          },
+          {
+            protocol: 'tcp',
+            ip: this.configService.get('MEDIASOUP_LISTEN_IP') || '0.0.0.0',
+            announcedIp: this.configService.get('MEDIASOUP_ANNOUNCED_IP'),
+            port: parseInt(this.configService.get('MEDIASOUP_PORT') || '55555')
+          }
+        ]
+      });
+
       this.worker.on('died', () => {
         console.error('Mediasoup worker died, exiting in 2 seconds...');
         setTimeout(() => process.exit(1), 2000);
@@ -117,13 +134,7 @@ export class SfuService {
 
     try {
       const transportOptions = {
-        listenIps: [
-          {
-            ip: this.configService.get('MEDIASOUP_LISTEN_IP') || '0.0.0.0',
-            announcedIp:
-              this.configService.get('MEDIASOUP_ANNOUNCED_IP') || undefined,
-          },
-        ],
+        webRtcServer: this.webRtcServer,
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -134,7 +145,7 @@ export class SfuService {
         dtlsParameters: {
           role: 'server',
         },
-        handshakeTimeout: 120000,
+        handshakeTimeout: 120000
       };
 
       const transport =
@@ -150,9 +161,21 @@ export class SfuService {
     }
   }
 
-  getIceServers() {
-    // return [ { urls: 'stun:freestun.net:3478' }, { urls: 'turn:freestun.net:3478', username: 'free', credential: 'free' } ];
-    return [];
+  async getIceServers() {
+    const useIceServers = this.configService.get('USE_ICE_SERVERS') || false;
+    if (!useIceServers) {
+      return [];
+    }
+    return [
+      { urls: this.configService.get('STUN_SERVER_URL') },
+      {
+        urls: [
+          this.configService.get('TURN_SERVER_URL'),
+        ],
+        username: this.configService.get('TURN_SERVER_USERNAME'),
+        credential: this.configService.get('TURN_SERVER_PASSWORD'),
+      },
+    ];
   }
 
   saveProducer(

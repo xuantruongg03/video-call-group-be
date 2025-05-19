@@ -51,13 +51,13 @@ interface Stream {
     methods: ['GET', 'POST'],
     credentials: true,
   },
-  path: '/socket.io/',
-  serveClient: false,
-  secure: true,
-  ssl: {
-    key: fs.readFileSync('secrets/private-key.pem'),
-    cert: fs.readFileSync('secrets/public-certificate.pem'),
-  },
+  // path: '/socket.io/',
+  // serveClient: false,
+  // secure: true,
+  // ssl: {
+  //   key: fs.readFileSync('secrets/private-key.pem'),
+  //   cert: fs.readFileSync('secrets/public-certificate.pem'),
+  // },
 })
 @Injectable()
 export class SfuGateway implements OnGatewayInit {
@@ -91,9 +91,7 @@ export class SfuGateway implements OnGatewayInit {
     const roomId = data.roomId;
     const peerId = data.peerId;
 
-    // Check if room is password protected
     if (this.sfuService.isRoomLocked(roomId)) {
-      // If room is locked, password is required
       if (!data.password) {
         client.emit('sfu:error', {
           message: 'This room is password protected',
@@ -102,11 +100,9 @@ export class SfuGateway implements OnGatewayInit {
         return;
       }
 
-      // Verify the password
       const isValid = this.sfuService.verifyRoomPassword(roomId, data.password);
 
       if (!isValid) {
-        console.log('Invalid room password');
         client.emit('sfu:error', {
           message: 'Invalid room password',
           code: 'INVALID_ROOM_PASSWORD',
@@ -117,7 +113,6 @@ export class SfuGateway implements OnGatewayInit {
 
     client.join(roomId);
 
-    // Initialize room if needed
     if (!this.rooms.has(roomId)) {
       this.rooms.set(roomId, new Map());
       await this.sfuService.createMediaRoom(roomId);
@@ -126,7 +121,6 @@ export class SfuGateway implements OnGatewayInit {
     const room = this.rooms.get(roomId);
     const isCreator = this.rooms.get(roomId)?.size === 0;
 
-    // Double-check username is not already in use (safety measure)
     if (room && room.has(peerId)) {
       client.emit('sfu:error', {
         message: 'Username already in use',
@@ -134,8 +128,6 @@ export class SfuGateway implements OnGatewayInit {
       });
       return;
     }
-
-    // Create participant object
     const participant: Participant = {
       socketId: client.id,
       peerId: peerId,
@@ -147,19 +139,8 @@ export class SfuGateway implements OnGatewayInit {
     };
 
     this.rooms.get(roomId)?.set(peerId, participant);
-
-    // If this user is the creator, notify all users including the new one
-    // if (isCreator) {
-    //   this.io.to(roomId).emit('sfu:creator-changed', {
-    //     peerId: peerId,
-    //     isCreator: true
-    //   });
-    // }
-
-    // Update service with latest room data
     this.sfuService.updateRooms(this.rooms);
 
-    // Send list of available streams in the room to the new participant
     const availableStreams = Array.from(this.streams.values())
       .filter((stream) => {
         const publisher = this.getParticipantByPeerId(stream.publisherId);
@@ -171,14 +152,12 @@ export class SfuGateway implements OnGatewayInit {
         metadata: stream.metadata,
       }));
 
-    // Tìm các stream "presence" và gửi sự kiện presence riêng
     const presenceStreams = availableStreams.filter(
       (stream) =>
         stream.streamId.includes('presence') ||
         (stream.metadata && stream.metadata.type === 'presence'),
     );
 
-    // Gửi router RTP capabilities đến client
     try {
       const router = await this.sfuService.createMediaRoom(roomId);
       client.emit('sfu:router-capabilities', {
@@ -195,7 +174,6 @@ export class SfuGateway implements OnGatewayInit {
 
     client.emit('sfu:streams', availableStreams);
 
-    // Gửi các sự kiện presence cho người dùng mới
     presenceStreams.forEach((stream) => {
       setTimeout(() => {
         client.emit('sfu:presence', {
@@ -204,19 +182,6 @@ export class SfuGateway implements OnGatewayInit {
         });
       }, 500);
     });
-
-    // If creator of the room exists, notify the joining user
-    if (!isCreator) {
-      const creator = Array.from(this.rooms.get(roomId)?.values() || []).find(
-        (user) => user.isCreator,
-      );
-      // if (creator) {
-      //   client.emit('sfu:creator-changed', {
-      //     peerId: creator.peerId,
-      //     isCreator: true
-      //   });
-      // }
-    }
 
     this.io.to(roomId).emit('sfu:new-peer-join', {
       peerId: participant.peerId,
@@ -274,7 +239,6 @@ export class SfuGateway implements OnGatewayInit {
         throw new Error(`Transport ${data.transportId} not found`);
       }
 
-      // Check if transport is already connected
       if (transport.appData && transport.appData.connected) {
         client.emit('sfu:transport-connected', {
           transportId: data.transportId,
@@ -288,7 +252,6 @@ export class SfuGateway implements OnGatewayInit {
 
       await transport.connect({ dtlsParameters: data.dtlsParameters });
 
-      // Mark transport as connected
       transport.appData = {
         ...transport.appData,
         connected: true,
@@ -430,9 +393,7 @@ export class SfuGateway implements OnGatewayInit {
         isProducer: data.isProducer,
       };
 
-      // Lưu transport vào participant
       participant.transports.set(transport.id, transport);
-      // Lắng nghe event khi transport đóng
       transport.on('routerclose', () => {
         console.log(`Transport ${transport.id} closed because router closed`);
         transport.close();
@@ -445,8 +406,12 @@ export class SfuGateway implements OnGatewayInit {
         iceParameters: transport.iceParameters,
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceCandidatePoolSize: 1,
+        iceTransportPolicy: 'relay',
         isProducer: data.isProducer,
-        iceServers: this.sfuService.getIceServers(),
+        iceServers: await this.sfuService.getIceServers(),
       };
 
       client.emit('sfu:transport-created', transportInfo);
@@ -787,11 +752,9 @@ export class SfuGateway implements OnGatewayInit {
     const roomId = this.getParticipantRoom(participant);
     if (!roomId) return;
 
-    // Lấy stream
     const stream = this.streams.get(data.streamId);
     if (!stream) return;
 
-    // Kiểm tra xem stream có thuộc về participant hay không
     if (stream.publisherId !== participant.peerId) {
       client.emit('sfu:error', {
         message: 'Bạn không sở hữu stream này',
@@ -800,21 +763,15 @@ export class SfuGateway implements OnGatewayInit {
       return;
     }
 
-    // Lấy producer
     const producer = participant.producers.get(stream.producerId);
     if (producer) {
-      // Đóng producer
       producer.close();
       participant.producers.delete(stream.producerId);
     }
 
-    // Xóa producer từ service
     this.sfuService.removeProducer(roomId, data.streamId);
-
-    // Xóa stream
     this.streams.delete(data.streamId);
 
-    // Thông báo cho các client khác
     client.to(roomId).emit('sfu:stream-removed', {
       streamId: data.streamId,
       publisherId: participant.peerId,
@@ -836,7 +793,6 @@ export class SfuGateway implements OnGatewayInit {
       return;
     }
 
-    //Tìm tất cả stream có sẵn trong phòng
     const availableStreams = Array.from(this.streams.values())
       .filter((stream) => {
         const publisher = this.getParticipantByPeerId(stream.publisherId);
@@ -854,14 +810,12 @@ export class SfuGateway implements OnGatewayInit {
 
     client.emit('sfu:streams', availableStreams);
 
-    // Xử lý riêng các stream presence
     const presenceStreams = availableStreams.filter(
       (stream) =>
         stream.streamId.includes('presence') ||
         (stream.metadata && stream.metadata.type === 'presence'),
     );
 
-    // Gửi sự kiện presence riêng cho từng stream presence
     presenceStreams.forEach((stream) => {
       setTimeout(() => {
         client.emit('sfu:presence', {
@@ -877,7 +831,6 @@ export class SfuGateway implements OnGatewayInit {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { streamId: string; metadata: any },
   ) {
-
     const participant = this.getParticipantBySocketId(client.id);
     if (!participant) return;
 
@@ -893,13 +846,11 @@ export class SfuGateway implements OnGatewayInit {
     const stream = this.getStreamByProducerId(data.streamId);
 
     if (!stream) {
-      // Tìm stream theo streamId thay vì producerId
       const streamById = Array.from(this.streams.values()).find(
         (s) => s.producerId === data.streamId,
       );
 
       if (streamById && streamById.publisherId === participant.peerId) {
-        // Cập nhật metadata nếu tìm thấy stream theo streamId
         if (data.metadata.video !== undefined) {
           streamById.metadata.video = data.metadata.video;
         }
@@ -911,7 +862,6 @@ export class SfuGateway implements OnGatewayInit {
             data.metadata.noCameraAvailable;
         }
 
-        // Thông báo cho các client khác về sự thay đổi
         client.to(roomId).emit('sfu:stream-updated', {
           streamId: data.streamId,
           publisherId: participant.peerId,
@@ -978,11 +928,6 @@ export class SfuGateway implements OnGatewayInit {
           streamId,
           publisherId: participant.peerId,
         });
-
-        // client.to(data.roomId).emit('sfu:remove-user', {
-        //   roomId: data.roomId,
-        //   participantId: participant.peerId,
-        // });
       }
     }
 
@@ -1037,18 +982,15 @@ export class SfuGateway implements OnGatewayInit {
       return;
     }
 
-    // Tìm xem có stream presence nào hiện tại không
     const existingPresenceStreams = Array.from(this.streams.entries()).filter(
       ([streamId, stream]) =>
         stream.publisherId === participant.peerId &&
         (streamId.includes('presence') || stream.metadata?.type === 'presence'),
     );
 
-    // Nếu đã có presence stream, chỉ cập nhật metadata thay vì tạo mới
     if (existingPresenceStreams.length > 0) {
       const [streamId, stream] = existingPresenceStreams[0];
 
-      // Cập nhật metadata
       stream.metadata = {
         ...stream.metadata,
         ...data.metadata,
@@ -1057,7 +999,6 @@ export class SfuGateway implements OnGatewayInit {
         noMicroAvailable: true,
       };
 
-      // Chỉ gửi thông báo cập nhật nếu có thay đổi
       client.to(roomId).emit('sfu:presence', {
         peerId: participant.peerId,
         metadata: stream.metadata,
@@ -1095,7 +1036,6 @@ export class SfuGateway implements OnGatewayInit {
     });
   }
 
-  // Helper methods
   private getParticipantBySocketId(socketId: string): Participant | null {
     for (const [_, room] of this.rooms) {
       for (const [_, participant] of room) {
@@ -1160,20 +1100,17 @@ export class SfuGateway implements OnGatewayInit {
       timestamp: new Date().toISOString(),
     };
 
-    // Lưu tin nhắn vào lịch sử
     if (this.roomMessages.has(roomId)) {
       this.roomMessages.get(roomId)?.push(newMessage);
     } else {
       this.roomMessages.set(roomId, [newMessage]);
     }
 
-    // Giới hạn kích thước lịch sử (chỉ lưu 100 tin nhắn gần nhất)
     const messages = this.roomMessages.get(roomId);
     if (messages && messages.length > 100) {
       this.roomMessages.set(roomId, messages.slice(-100));
     }
 
-    // Phát tin nhắn đến tất cả người dùng trong phòng
     this.io.to(roomId).emit('chat:message', newMessage);
   }
 
@@ -1210,20 +1147,17 @@ export class SfuGateway implements OnGatewayInit {
       isImage: data.message.isImage,
     };
 
-    // Lưu tin nhắn vào lịch sử
     if (this.roomMessages.has(roomId)) {
       this.roomMessages.get(roomId)?.push(newMessage);
     } else {
       this.roomMessages.set(roomId, [newMessage]);
     }
 
-    // Giới hạn kích thước lịch sử (chỉ lưu 100 tin nhắn gần nhất)
     const messages = this.roomMessages.get(roomId);
     if (messages && messages.length > 100) {
       this.roomMessages.set(roomId, messages.slice(-100));
     }
 
-    // Phát tin nhắn đến tất cả người dùng trong phòng
     this.io.to(roomId).emit('chat:message', newMessage);
   }
 
@@ -1244,7 +1178,6 @@ export class SfuGateway implements OnGatewayInit {
     const participant = this.getParticipantBySocketId(client.id);
     if (!participant) return;
 
-    //Kiểm tra xem participant có phải là creator của phòng hay không
     if (!participant.isCreator) {
       client.emit('sfu:error', {
         message: 'Bạn không phải là người tạo phòng này',
@@ -1253,7 +1186,6 @@ export class SfuGateway implements OnGatewayInit {
       return;
     }
 
-    //Kiểm tra xem phòng có tồn tại hay không
     const roomId = this.getParticipantRoom(participant);
     if (!roomId || roomId !== data.roomId) {
       client.emit('sfu:error', {
@@ -1263,14 +1195,12 @@ export class SfuGateway implements OnGatewayInit {
       return;
     }
 
-    //Khóa phòng
     const success = this.sfuService.lockRoom(
       roomId,
       data.password,
       participant.peerId,
     );
 
-    //Thông báo cho tất cả người dùng trong phòng phòng đã được khóa
     if (success) {
       this.io.to(roomId).emit('sfu:room-locked', {
         locked: true,
@@ -1336,19 +1266,8 @@ export class SfuGateway implements OnGatewayInit {
 
     if (!participant) return;
 
-    // Kiểm tra xem người dùng có quyền vẽ không
-    // if (!this.whiteboardService.canUserDraw(roomId, participant.peerId)) {
-    //   client.emit('whiteboard:error', {
-    //     message: 'Bạn không có quyền vẽ trên bảng trắng này',
-    //     code: 'PERMISSION_DENIED'
-    //   });
-    //   return;
-    // }
-
-    // Lưu trữ dữ liệu bảng trắng
     this.whiteboardService.updateWhiteboardData(roomId, { elements, state });
 
-    // Gửi cập nhật đến tất cả người dùng khác trong phòng
     client.to(roomId).emit('whiteboard:updated', { elements, state });
   }
 
@@ -2047,7 +1966,8 @@ export class SfuGateway implements OnGatewayInit {
   @SubscribeMessage('sfu:send-behavior-logs')
   handleSendBehaviorLogs(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { peerId: string; roomId: string; behaviorLogs: UserEvent[] },
+    @MessageBody()
+    data: { peerId: string; roomId: string; behaviorLogs: UserEvent[] },
   ) {
     if (!data.peerId) {
       return { success: false, error: 'Người dùng không tồn tại' };
@@ -2063,7 +1983,13 @@ export class SfuGateway implements OnGatewayInit {
         data.roomId,
         data.behaviorLogs,
       );
-      console.log("saveUserBehavior for", data.peerId, "with", data.behaviorLogs.length, "events");
+      console.log(
+        'saveUserBehavior for',
+        data.peerId,
+        'with',
+        data.behaviorLogs.length,
+        'events',
+      );
     }
 
     return { success: true };
@@ -2079,15 +2005,18 @@ export class SfuGateway implements OnGatewayInit {
 
     const isCreator = this.sfuService.isCreatorOfRoom(peerId, roomId);
     if (!isCreator) {
-      return { success: false, error: 'Chỉ người tạo phòng mới có thể tải file log' };
+      return {
+        success: false,
+        error: 'Chỉ người tạo phòng mới có thể tải file log',
+      };
     }
-    
+
     this.io.to(roomId).emit('sfu:behavior-monitor-state', {
       isActive: false,
     });
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       const excel = await this.behaviorService.generateRoomLogExcel(roomId);
       return { success: true, file: excel };
     } catch (error) {
@@ -2099,7 +2028,7 @@ export class SfuGateway implements OnGatewayInit {
   @SubscribeMessage('sfu:download-user-log')
   async handleDownloadUserLog(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { roomId: string; peerId: string, creatorId: string },
+    @MessageBody() data: { roomId: string; peerId: string; creatorId: string },
   ) {
     const roomId = data.roomId;
     const peerId = data.peerId;
@@ -2107,16 +2036,22 @@ export class SfuGateway implements OnGatewayInit {
 
     const isCreator = this.sfuService.isCreatorOfRoom(creatorId, roomId);
     if (!isCreator) {
-      return { success: false, error: 'Chỉ người tạo phòng mới có thể tải file log' };
+      return {
+        success: false,
+        error: 'Chỉ người tạo phòng mới có thể tải file log',
+      };
     }
-    
+
     this.io.to(roomId).emit('sfu:request-user-log', {
       peerId: peerId,
     });
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      const excel = await this.behaviorService.generateUserLogExcel(roomId, peerId);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const excel = await this.behaviorService.generateUserLogExcel(
+        roomId,
+        peerId,
+      );
       return { success: true, file: excel };
     } catch (error) {
       console.error('Error generating user log:', error);
