@@ -1,6 +1,7 @@
-import { Controller, Post, Body, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, HttpException, HttpStatus, Get, UseGuards } from '@nestjs/common';
 import { SfuService } from './sfu.service';
 import { log } from 'console';
+// import { AdminGuard } from '../guards/admin.guard';
 
 @Controller('sfu')
 export class SfuController {
@@ -73,5 +74,11 @@ export class SfuController {
         message: isLocked ? 'Room is password-protected' : 'Room is open'
       }
     };
+  }
+
+  @Get('workers/status')
+  // @UseGuards(AdminGuard)
+  async getWorkersStatus() {
+    return this.sfuService.getWorkersStatus();
   }
 } 
