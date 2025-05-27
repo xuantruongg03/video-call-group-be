@@ -6,9 +6,11 @@ import { SfuGateway } from './sfu.gateway';
 import { SfuService } from './sfu.service';
 import { BehaviorService } from './behavior.service';
 import { BehaviorController } from './behavior.controller';
+import { WorkerPoolService } from 'src/worker-pool/worker-pool.service';
+import { EventEmitter2 } from 'eventemitter2';
 
 @Module({
-  providers: [SfuGateway, SfuService, ConfigService, BehaviorService],
+  providers: [SfuGateway, SfuService, ConfigService, BehaviorService, WorkerPoolService, EventEmitter2],
   controllers: [SfuController, BehaviorController],
   exports: [SfuService, BehaviorService],
   imports: [forwardRef(() => WhiteboardModule)]
